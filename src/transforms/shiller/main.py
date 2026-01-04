@@ -46,7 +46,7 @@ def run():
     lines = csv_text.strip().split('\n')
     header = lines[0].split(',')
 
-    rows = []
+    rows_by_date = {}
     for line in lines[1:]:
         values = line.split(',')
         if len(values) != len(header):
@@ -63,10 +63,14 @@ def run():
                     row[mapped_col] = float(val)
                 except ValueError:
                     row[mapped_col] = val
-        rows.append(row)
+        # Keep last occurrence for each date (later revisions override earlier)
+        rows_by_date[row['date']] = row
 
-    if not rows:
+    if not rows_by_date:
         raise ValueError("No Shiller data found")
+
+    # Sort by date to maintain chronological order
+    rows = [rows_by_date[d] for d in sorted(rows_by_date.keys())]
 
     print(f"  Transformed {len(rows):,} rows")
     print(f"  Date range: {rows[0]['date']} to {rows[-1]['date']}")
@@ -75,7 +79,7 @@ def run():
 
     test(table)
 
-    upload_data(table, DATASET_ID)
+    upload_data(table, DATASET_ID, mode="overwrite")
     publish(DATASET_ID, METADATA)
 
 

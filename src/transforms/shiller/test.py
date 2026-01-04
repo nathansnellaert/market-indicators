@@ -12,6 +12,7 @@ def test(table: pa.Table) -> None:
             "cape": "double",
         },
         "not_null": ["date"],
+        "unique": ["date"],
         "min_rows": 1000,
     })
 
