@@ -23,6 +23,8 @@ from ingest import big_mac_index as ingest_big_mac
 from transforms import shiller as transform_shiller
 from transforms import rig_counts as transform_rigs
 from transforms import sentiment as transform_sentiment
+from transforms import cboe as transform_cboe
+from transforms import big_mac as transform_big_mac
 
 
 def main():
@@ -60,11 +62,17 @@ def main():
         print("\n--- Shiller Data ---")
         transform_shiller.run()
 
+        print("\n--- CBOE Volatility Indices ---")
+        transform_cboe.run()
+
         print("\n--- Rig Counts ---")
         transform_rigs.run()
 
         print("\n--- Consumer Sentiment ---")
         transform_sentiment.run()
+
+        print("\n--- Big Mac Index ---")
+        transform_big_mac.run()
 
 
 if __name__ == "__main__":

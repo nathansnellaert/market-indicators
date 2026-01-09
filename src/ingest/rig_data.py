@@ -1,4 +1,29 @@
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+import httpx
 from subsets_utils import get, save_raw_file
+
+
+def is_transient_error(exception):
+    """Return True for errors that should be retried."""
+    if isinstance(exception, (httpx.TimeoutException, httpx.ConnectError)):
+        return True
+    if isinstance(exception, httpx.HTTPStatusError):
+        return exception.response.status_code >= 500
+    return False
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=10, min=10, max=120),
+    retry=retry_if_exception(is_transient_error),
+    reraise=True
+)
+def fetch_file(url: str, timeout: int = 300):
+    """Fetch a file with retry logic for transient errors."""
+    response = get(url, timeout=timeout)
+    response.raise_for_status()
+    return response
+
 
 # Baker Hughes static file URLs
 # Source: https://rigcount.bakerhughes.com/na-rig-count and https://rigcount.bakerhughes.com/intl-rig-count
@@ -33,12 +58,6 @@ def run():
     """Fetch all Baker Hughes rig count Excel files."""
     for name, url in FILES.items():
         print(f"  Fetching {name}...")
-        try:
-            response = get(url, timeout=300)
-            response.raise_for_status()
-            save_raw_file(response.content, name, extension="xlsx")
-            print(f"    Saved {name}.xlsx ({len(response.content):,} bytes)")
-        except Exception as e:
-            # Some files may be removed/renamed - log and continue
-            print(f"    Failed to fetch {name}: {e}")
-            raise
+        response = fetch_file(url, timeout=300)
+        save_raw_file(response.content, name, extension="xlsx")
+        print(f"    Saved {name}.xlsx ({len(response.content):,} bytes)")
