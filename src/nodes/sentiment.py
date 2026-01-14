@@ -1,50 +1,27 @@
-"""Transform UMich Consumer Sentiment data."""
+"""UMich Consumer Sentiment data - ingest and transform.
+
+Data source: https://www.sca.isr.umich.edu/
+"""
 
 import csv
 from io import StringIO
 import pyarrow as pa
-from subsets_utils import load_raw_json, upload_data, publish
-from .test import test_consumer_sentiment, test_sentiment_components, test_inflation_expectations
+from subsets_utils import get, save_raw_json, load_raw_json, upload_data, validate
+from subsets_utils.testing import assert_valid_month
 
+BASE_URL = "https://www.sca.isr.umich.edu/files"
 START_YEAR = 1978
+
+FILES = [
+    ("tbmics.csv", "consumer_sentiment"),
+    ("tbmiccice.csv", "sentiment_components"),
+    ("tbmpx1px5.csv", "inflation_expectations"),
+]
 
 MONTH_MAP = {
     "January": 1, "February": 2, "March": 3, "April": 4,
     "May": 5, "June": 6, "July": 7, "August": 8,
     "September": 9, "October": 10, "November": 11, "December": 12
-}
-
-# Dataset configurations
-CONSUMER_SENTIMENT = {
-    "id": "umich_consumer_sentiment",
-    "title": "University of Michigan Consumer Sentiment Index (Monthly)",
-    "description": "Monthly Index of Consumer Sentiment (ICS) from the University of Michigan Survey of Consumers. Measures consumer confidence about personal finances and business conditions.",
-    "column_descriptions": {
-        "month": "Month of survey (YYYY-MM)",
-        "index": "Index of Consumer Sentiment (1966=100)",
-    }
-}
-
-SENTIMENT_COMPONENTS = {
-    "id": "umich_sentiment_components",
-    "title": "University of Michigan Sentiment Components (Monthly)",
-    "description": "Component indices from the University of Michigan Survey of Consumers. ICC measures current conditions, ICE measures consumer expectations.",
-    "column_descriptions": {
-        "month": "Month of survey (YYYY-MM)",
-        "index_current_conditions": "Index of Current Economic Conditions",
-        "index_expectations": "Index of Consumer Expectations",
-    }
-}
-
-INFLATION_EXPECTATIONS = {
-    "id": "umich_inflation_expectations",
-    "title": "University of Michigan Inflation Expectations (Monthly)",
-    "description": "Consumer inflation expectations from the University of Michigan Survey of Consumers. Median expected price changes over 1-year and 5-year horizons.",
-    "column_descriptions": {
-        "month": "Month of survey (YYYY-MM)",
-        "inflation_1yr": "Expected inflation over next 12 months (percent)",
-        "inflation_5yr": "Expected inflation over next 5 years (percent)",
-    }
 }
 
 
@@ -70,18 +47,48 @@ def parse_float(value):
         return None
 
 
-def run():
-    """Transform all sentiment data files."""
-    raw_data = load_raw_json("sentiment_data")
+def test_consumer_sentiment(table: pa.Table) -> None:
+    """Validate consumer sentiment output."""
+    validate(table, {
+        "columns": {
+            "month": "string",
+            "index": "double",
+        },
+        "not_null": ["month", "index"],
+        "min_rows": 100,
+    })
+    assert_valid_month(table, "month")
+    print(f"  Validated {len(table):,} consumer sentiment records")
 
-    # Consumer Sentiment Index
-    process_consumer_sentiment(raw_data["consumer_sentiment"])
 
-    # Sentiment Components
-    process_sentiment_components(raw_data["sentiment_components"])
+def test_sentiment_components(table: pa.Table) -> None:
+    """Validate sentiment components output."""
+    validate(table, {
+        "columns": {
+            "month": "string",
+            "index_current_conditions": "double",
+            "index_expectations": "double",
+        },
+        "not_null": ["month"],
+        "min_rows": 100,
+    })
+    assert_valid_month(table, "month")
+    print(f"  Validated {len(table):,} sentiment component records")
 
-    # Inflation Expectations
-    process_inflation_expectations(raw_data["inflation_expectations"])
+
+def test_inflation_expectations(table: pa.Table) -> None:
+    """Validate inflation expectations output."""
+    validate(table, {
+        "columns": {
+            "month": "string",
+            "inflation_1yr": "double",
+            "inflation_5yr": "double",
+        },
+        "not_null": ["month"],
+        "min_rows": 100,
+    })
+    assert_valid_month(table, "month")
+    print(f"  Validated {len(table):,} inflation expectation records")
 
 
 def process_consumer_sentiment(csv_text):
@@ -114,9 +121,7 @@ def process_consumer_sentiment(csv_text):
     table = pa.Table.from_pylist(processed)
 
     test_consumer_sentiment(table)
-
-    upload_data(table, CONSUMER_SENTIMENT["id"], mode="overwrite")
-    publish(CONSUMER_SENTIMENT["id"], CONSUMER_SENTIMENT)
+    upload_data(table, "umich_consumer_sentiment", mode="overwrite")
 
 
 def process_sentiment_components(csv_text):
@@ -152,9 +157,7 @@ def process_sentiment_components(csv_text):
     table = pa.Table.from_pylist(processed)
 
     test_sentiment_components(table)
-
-    upload_data(table, SENTIMENT_COMPONENTS["id"], mode="overwrite")
-    publish(SENTIMENT_COMPONENTS["id"], SENTIMENT_COMPONENTS)
+    upload_data(table, "umich_sentiment_components", mode="overwrite")
 
 
 def process_inflation_expectations(csv_text):
@@ -190,10 +193,36 @@ def process_inflation_expectations(csv_text):
     table = pa.Table.from_pylist(processed)
 
     test_inflation_expectations(table)
+    upload_data(table, "umich_inflation_expectations", mode="overwrite")
 
-    upload_data(table, INFLATION_EXPECTATIONS["id"], mode="overwrite")
-    publish(INFLATION_EXPECTATIONS["id"], INFLATION_EXPECTATIONS)
 
+def run():
+    """Ingest and transform UMich Consumer Sentiment data."""
+    # Ingest
+    print("Fetching UMich Consumer Sentiment data...")
+    all_data = {}
+
+    for filename, key in FILES:
+        print(f"  Fetching {filename}...")
+        url = f"{BASE_URL}/{filename}"
+        response = get(url)
+        response.raise_for_status()
+        all_data[key] = response.text
+
+    save_raw_json(all_data, "sentiment_data")
+
+    # Transform
+    print("Transforming sentiment data...")
+    raw_data = load_raw_json("sentiment_data")
+
+    process_consumer_sentiment(raw_data["consumer_sentiment"])
+    process_sentiment_components(raw_data["sentiment_components"])
+    process_inflation_expectations(raw_data["inflation_expectations"])
+
+
+NODES = {
+    run: [],
+}
 
 if __name__ == "__main__":
     run()

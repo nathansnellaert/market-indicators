@@ -1,11 +1,16 @@
-"""Transform CBOE volatility indices data."""
+"""CBOE volatility and strategy indices - ingest and transform.
+
+Data source: https://www.cboe.com/
+"""
 
 import csv
 from datetime import datetime
 from io import StringIO
 import pyarrow as pa
-from subsets_utils import load_raw_file, list_raw_files, upload_data, publish
-from .test import test
+from subsets_utils import get, save_raw_file, load_raw_file, upload_data, validate
+from subsets_utils.testing import assert_valid_date, assert_positive
+
+BASE_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices"
 
 # CBOE indices grouped by category
 VOLATILITY_INDICES = ["VIX", "VIX1D", "VIX9D", "VIX3M", "VIX6M", "VIX1Y", "VVIX", "SKEW"]
@@ -22,7 +27,7 @@ ALL_INDICES = (
     VOLATILITY_INDICES + COMMODITY_VOLATILITY + SINGLE_STOCK_VOLATILITY +
     BUYWRITE_INDICES + PUTWRITE_INDICES + COLLAR_INDICES +
     OTHER_STRATEGY + VIX_STRATEGY + SP500_STRATEGY
-)
+    )
 
 INDEX_CATEGORIES = {
     **{idx: "volatility" for idx in VOLATILITY_INDICES},
@@ -37,21 +42,6 @@ INDEX_CATEGORIES = {
 }
 
 DATASET_ID = "cboe_volatility_indices"
-
-METADATA = {
-    "id": DATASET_ID,
-    "title": "CBOE Volatility and Strategy Indices (Daily)",
-    "description": "Daily values for CBOE volatility indices (VIX, VVIX, SKEW) and strategy benchmark indices (BuyWrite, PutWrite, Collar). Includes open, high, low, close values where available.",
-    "column_descriptions": {
-        "date": "Trading date (YYYY-MM-DD)",
-        "index": "CBOE index symbol (e.g., VIX, SKEW, BXM)",
-        "category": "Index category (volatility, buywrite, putwrite, collar, etc.)",
-        "open": "Opening value",
-        "high": "Intraday high",
-        "low": "Intraday low",
-        "close": "Closing value",
-    }
-}
 
 
 def parse_date(date_str: str) -> str | None:
@@ -78,6 +68,41 @@ def parse_float(value: str) -> float | None:
         return None
 
 
+def test(table: pa.Table) -> None:
+    """Validate CBOE indices output."""
+    validate(table, {
+        "columns": {
+            "date": "string",
+            "index": "string",
+            "category": "string",
+            "close": "double",
+        },
+        "not_null": ["date", "index", "category", "close"],
+        "min_rows": 10000,
+    })
+
+    assert_valid_date(table, "date")
+    assert_positive(table, "close")
+
+    indices = set(table.column("index").to_pylist())
+    assert len(indices) >= 10, f"Expected at least 10 indices, got {len(indices)}"
+
+    dates = table.column("date").to_pylist()
+    max_date = max(dates)
+    assert max_date > "2024-01-01", f"Expected recent data, got latest: {max_date}"
+
+    valid_categories = {
+        "volatility", "commodity_volatility", "single_stock_volatility",
+        "buywrite", "putwrite", "collar", "other_strategy",
+        "vix_strategy", "sp500_strategy", "other"
+    }
+    categories = set(table.column("category").to_pylist())
+    invalid = categories - valid_categories
+    assert not invalid, f"Invalid categories: {invalid}"
+
+    print(f"  Validated {len(table):,} CBOE records across {len(indices)} indices")
+
+
 def process_index_file(index_name: str) -> list[dict]:
     """Process a single CBOE index CSV file."""
     try:
@@ -93,7 +118,6 @@ def process_index_file(index_name: str) -> list[dict]:
         if not date:
             continue
 
-        # Get close value - required
         close = parse_float(row.get("CLOSE") or row.get(index_name))
         if close is None:
             continue
@@ -113,7 +137,18 @@ def process_index_file(index_name: str) -> list[dict]:
 
 
 def run():
-    """Transform all CBOE index data to unified dataset."""
+    """Ingest and transform CBOE volatility indices."""
+    # Ingest
+    print(f"Fetching {len(ALL_INDICES)} CBOE indices...")
+    for i, index in enumerate(ALL_INDICES, 1):
+        print(f"  [{i}/{len(ALL_INDICES)}] Fetching {index}...")
+        url = f"{BASE_URL}/{index}_History.csv"
+        response = get(url)
+        response.raise_for_status()
+        save_raw_file(response.text, index, extension="csv")
+
+    # Transform
+    print("Transforming CBOE indices...")
     all_records = []
 
     for index_name in ALL_INDICES:
@@ -125,7 +160,6 @@ def run():
     if not all_records:
         raise ValueError("No CBOE index data found")
 
-    # Sort by date and index
     all_records.sort(key=lambda r: (r["date"], r["index"]))
 
     table = pa.Table.from_pylist(all_records)
@@ -133,8 +167,11 @@ def run():
 
     test(table)
     upload_data(table, DATASET_ID, mode="overwrite")
-    publish(DATASET_ID, METADATA)
 
+
+NODES = {
+    run: [],
+}
 
 if __name__ == "__main__":
     run()

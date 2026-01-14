@@ -12,4 +12,6 @@ dependencies = [
     "tenacity",
     "pandas",
     "openpyxl",
+
+    "duckdb",
 ]

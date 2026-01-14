@@ -1,29 +1,13 @@
-"""Transform Shiller S&P 500 data."""
+"""Shiller S&P 500 historical data - ingest and transform.
+
+Data source: https://datahub.io/core/s-and-p-500
+"""
 
 import pyarrow as pa
-from subsets_utils import load_raw_file, upload_data, publish
-from .test import test
+from subsets_utils import get, save_raw_file, load_raw_file, upload_data, validate
 
+DATA_URL = "https://datahub.io/core/s-and-p-500/r/data.csv"
 DATASET_ID = "sp500_shiller"
-
-METADATA = {
-    "id": DATASET_ID,
-    "title": "Shiller S&P 500 Historical Data",
-    "description": "Robert Shiller's S&P 500 historical stock market data. Monthly data including prices, dividends, earnings, CPI, interest rates, and the cyclically adjusted price-to-earnings ratio (CAPE).",
-    "column_descriptions": {
-        "date": "Date (YYYY-MM-DD format)",
-        "sp500": "S&P 500 index level",
-        "dividend": "12-month trailing dividends",
-        "earnings": "12-month trailing earnings",
-        "cpi": "Consumer Price Index",
-        "long_interest_rate": "10-year Treasury rate",
-        "real_price": "Real (inflation-adjusted) S&P 500 price",
-        "real_dividend": "Real (inflation-adjusted) dividends",
-        "real_earnings": "Real (inflation-adjusted) earnings",
-        "cape": "Cyclically Adjusted Price-to-Earnings ratio (Shiller P/E)",
-    }
-}
-
 
 COLUMN_MAP = {
     "Date": "date",
@@ -39,8 +23,40 @@ COLUMN_MAP = {
 }
 
 
+def test(table: pa.Table) -> None:
+    """Validate Shiller S&P 500 output."""
+    validate(table, {
+        "columns": {
+            "date": "string",
+            "sp500": "double",
+            "cpi": "double",
+            "cape": "double",
+        },
+        "not_null": ["date"],
+        "unique": ["date"],
+        "min_rows": 1000,
+    })
+
+    dates = table.column("date").to_pylist()
+    assert dates[0] < dates[-1], "Data should be chronologically sorted"
+
+    cape_values = [c for c in table.column("cape").to_pylist() if c]
+    assert min(cape_values) > 0, "CAPE should be positive"
+    assert max(cape_values) < 100, "CAPE should be reasonable"
+
+    print(f"  Validated {len(table):,} Shiller records")
+
+
 def run():
-    """Transform Shiller data to Arrow table."""
+    """Ingest and transform Shiller S&P 500 data."""
+    # Ingest
+    print("Fetching Shiller S&P 500 data...")
+    response = get(DATA_URL)
+    response.raise_for_status()
+    save_raw_file(response.text, "shiller_data", extension="csv")
+
+    # Transform
+    print("Transforming Shiller data...")
     csv_text = load_raw_file("shiller_data", extension="csv")
 
     lines = csv_text.strip().split('\n')
@@ -63,25 +79,24 @@ def run():
                     row[mapped_col] = float(val)
                 except ValueError:
                     row[mapped_col] = val
-        # Keep last occurrence for each date (later revisions override earlier)
         rows_by_date[row['date']] = row
 
     if not rows_by_date:
         raise ValueError("No Shiller data found")
 
-    # Sort by date to maintain chronological order
     rows = [rows_by_date[d] for d in sorted(rows_by_date.keys())]
 
     print(f"  Transformed {len(rows):,} rows")
     print(f"  Date range: {rows[0]['date']} to {rows[-1]['date']}")
 
     table = pa.Table.from_pylist(rows)
-
     test(table)
-
     upload_data(table, DATASET_ID, mode="overwrite")
-    publish(DATASET_ID, METADATA)
 
+
+NODES = {
+    run: [],
+}
 
 if __name__ == "__main__":
     run()
